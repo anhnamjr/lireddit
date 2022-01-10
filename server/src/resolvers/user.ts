@@ -8,6 +8,7 @@ import {
   Field,
   Ctx,
   ObjectType,
+  Query,
 } from "type-graphql";
 import argon2 from "argon2";
 
@@ -39,6 +40,17 @@ class UserResponse {
 
 @Resolver()
 export class UserResolver {
+  @Query(() => User, { nullable: true })
+  async me(@Ctx() { req, em }: MyContext) {
+    const meId = req.session.userId;
+
+    if (!meId) {
+      return null;
+    }
+
+    return await em.findOne(User, { id: meId });
+  }
+
   @Mutation(() => UserResponse)
   async register(
     @Arg("options") { username, password }: UsernamePasswordInput,
@@ -111,8 +123,9 @@ export class UserResolver {
   @Mutation(() => UserResponse)
   async login(
     @Arg("options") { username, password }: UsernamePasswordInput,
-    @Ctx() { em }: MyContext
+    @Ctx() { em, req }: MyContext
   ): Promise<UserResponse> {
+    console.log("hello");
     const user = await em.findOne(User, { username });
     if (!user) {
       return {
@@ -136,6 +149,8 @@ export class UserResolver {
         ],
       };
     }
+
+    req.session.userId = user.id;
 
     return { user };
   }
