@@ -68,12 +68,12 @@ export class UserResolver {
       };
     }
 
-    if (username.length < 6) {
+    if (username.length < 2) {
       return {
         errors: [
           {
             field: "username",
-            message: "Username length must be greater than 6",
+            message: "Username length must be greater than 2",
           },
         ],
       };
@@ -90,12 +90,12 @@ export class UserResolver {
       };
     }
 
-    if (password.length < 6) {
+    if (password.length < 2) {
       return {
         errors: [
           {
             field: "Password",
-            message: "Password length must be greater than 6",
+            message: "Password length must be greater than 2",
           },
         ],
       };
