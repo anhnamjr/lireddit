@@ -1,10 +1,11 @@
+import { validateEmail } from "./../utils/validateEmail";
+import { validateRegister } from "./../utils/validateRegister";
 import { User } from "./../entities/User";
 import { MyContext } from "./../type";
 import {
   Resolver,
   Mutation,
   Arg,
-  InputType,
   Field,
   Ctx,
   ObjectType,
@@ -12,15 +13,10 @@ import {
 } from "type-graphql";
 import argon2 from "argon2";
 import { EntityManager } from "@mikro-orm/postgresql";
-import { COOKIE_NAME } from "../constants";
-@InputType()
-class UsernamePasswordInput {
-  @Field()
-  username: string;
-  @Field()
-  password: string;
-}
-
+import { COOKIE_NAME, FORGET_PASSWORD_PREFIX } from "../constants";
+import { UsernamePasswordInput } from "./UsernamePasswordInput";
+import { sendEmail } from "../utils/sendEmail";
+import { v4 } from "uuid";
 @ObjectType()
 class FieldError {
   @Field()
@@ -41,6 +37,102 @@ class UserResponse {
 
 @Resolver()
 export class UserResolver {
+  @Mutation(() => UserResponse)
+  async changePassword(
+    @Arg("token") token: string,
+    @Arg("newPassword") newPassword: string,
+    @Ctx() { redis, em, req }: MyContext
+  ): Promise<UserResponse> {
+    const key = `${FORGET_PASSWORD_PREFIX}${token}`;
+    const userId = await redis.get(key);
+
+    if (!userId) {
+      return {
+        errors: [
+          {
+            field: "token",
+            message: "Invalid token",
+          },
+        ],
+      };
+    }
+
+    if (!newPassword) {
+      return {
+        errors: [
+          {
+            field: "newPassword",
+            message: "New password must not be empty",
+          },
+        ],
+      };
+    }
+    if (newPassword.length < 2) {
+      return {
+        errors: [
+          {
+            field: "newPassword",
+            message: "New password length must greater than 2",
+          },
+        ],
+      };
+    }
+    const hashedNewPassword = await argon2.hash(newPassword);
+
+    const user = await em.findOne(User, { id: parseInt(userId) });
+
+    if (!user) {
+      return {
+        errors: [
+          {
+            field: "token",
+            message: "User no longer exists",
+          },
+        ],
+      };
+    }
+
+    user.password = hashedNewPassword;
+    await em.persistAndFlush(user);
+
+    await redis.del(key);
+
+    // log in user after change password
+    req.session.userId = user.id;
+
+    return { user };
+  }
+
+  @Mutation(() => Boolean)
+  async forgotPassword(
+    @Arg("email") email: string,
+    @Ctx() { em, redis }: MyContext
+  ) {
+    const user = await em.findOne(User, { email });
+
+    if (!user) {
+      // email doesn't exist in db
+      return false;
+    }
+
+    const token = v4();
+
+    const key = `${FORGET_PASSWORD_PREFIX}${token}`;
+    await redis.set(
+      key,
+      user.id,
+      "PX",
+      1000 * 60 * 5 // 5 minutes
+    );
+
+    await sendEmail(
+      email,
+      `<a href="http://localhost:3000/change-password/${token}">Change password</a>`
+    );
+
+    return true;
+  }
+
   @Query(() => User, { nullable: true })
   async me(@Ctx() { req, em }: MyContext) {
     const meId = req.session.userId;
@@ -54,50 +146,14 @@ export class UserResolver {
 
   @Mutation(() => UserResponse)
   async register(
-    @Arg("options") { username, password }: UsernamePasswordInput,
+    @Arg("options") { username, password, email }: UsernamePasswordInput,
     @Ctx() { em, req }: MyContext
   ): Promise<UserResponse> {
-    if (!username) {
-      return {
-        errors: [
-          {
-            field: "username",
-            message: "Username must not be empty",
-          },
-        ],
-      };
-    }
+    const errors = validateRegister({ username, password, email });
 
-    if (username.length < 2) {
+    if (errors) {
       return {
-        errors: [
-          {
-            field: "username",
-            message: "Username length must be greater than 2",
-          },
-        ],
-      };
-    }
-
-    if (!password) {
-      return {
-        errors: [
-          {
-            field: "password",
-            message: "Password must not be empty",
-          },
-        ],
-      };
-    }
-
-    if (password.length < 2) {
-      return {
-        errors: [
-          {
-            field: "Password",
-            message: "Password length must be greater than 2",
-          },
-        ],
+        errors,
       };
     }
 
@@ -110,6 +166,7 @@ export class UserResolver {
         .insert({
           username,
           password: hashedPassword,
+          email,
           created_at: new Date(),
           updated_at: new Date(),
         })
@@ -136,17 +193,22 @@ export class UserResolver {
 
   @Mutation(() => UserResponse)
   async login(
-    @Arg("options") { username, password }: UsernamePasswordInput,
+    @Arg("usernameOrEmail") usernameOrEmail: string,
+    @Arg("password") password: string,
     @Ctx() { em, req }: MyContext
   ): Promise<UserResponse> {
-    console.log("hello");
-    const user = await em.findOne(User, { username });
+    const user = await em.findOne(
+      User,
+      validateEmail(usernameOrEmail)
+        ? { email: usernameOrEmail }
+        : { username: usernameOrEmail }
+    );
     if (!user) {
       return {
         errors: [
           {
-            field: "username",
-            message: "Username doesn't exist",
+            field: "usernameOrEmail",
+            message: "Username or Email doesn't exist",
           },
         ],
       };
